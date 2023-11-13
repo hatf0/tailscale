@@ -11,29 +11,7 @@ declare global {
 
   interface IPN {
     run(callbacks: IPNCallbacks): void
-    login(): void
-    logout(): void
-    ssh(
-      host: string,
-      username: string,
-      termConfig: {
-        writeFn: (data: string) => void
-        writeErrorFn: (err: string) => void
-        setReadFn: (readFn: (data: string) => void) => void
-        rows: number
-        cols: number
-        /** Defaults to 5 seconds */
-        timeoutSeconds?: number
-        onConnectionProgress: (message: string) => void
-        onConnected: () => void
-        onDone: () => void
-      }
-    ): IPNSSHSession
-    fetch(url: string): Promise<{
-      status: number
-      statusText: string
-      text: () => Promise<string>
-    }>
+    listen(args: ListenArgs): void
   }
 
   interface IPNSSHSession {
@@ -51,6 +29,17 @@ declare global {
     authKey?: string
     controlURL?: string
     hostname?: string
+  }
+
+  type ListenArgs = {
+    port: number,
+    onConnection: (socket: IPNSocket) => void,
+  };
+
+  type IPNSocket = {
+    read: ReadableStream<Uint8Array>,
+    write: WritableStream<Uint8Array>,
+    close: () => void,
   }
 
   type IPNCallbacks = {

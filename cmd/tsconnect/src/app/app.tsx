@@ -95,8 +95,26 @@ class App extends Component<{}, AppState> {
     const { ipn } = this.state
     this.setState({ ipnState: state })
     if (state === "NeedsLogin") {
-      ipn?.login()
     } else if (["Running", "NeedsMachineAuth"].includes(state)) {
+      ipn?.listen({
+        port: 80,
+        onConnection(socket) {
+          const reader = socket.read.getReader();
+          const writer = socket.write.getWriter();
+          (async () => {
+            const arr = await reader.read()
+            if (arr.value) {
+              console.log(new TextDecoder().decode(arr.value!))
+            }
+            const writeBuf = new TextEncoder().encode(`HTTP/1.1 200 OK\r\nServer: tailscale-web\r\nConnection: close\r\nContent-Type: text/plain\r\n\r\nHello, world! You are talking to a web server hosted inside of a web browser!\r\nIt is currently ${new Date().toISOString()}. My user-agent is: ${navigator.userAgent}.\r\n\r\n`)
+            try {
+              await writer.write(writeBuf);
+            } catch (e) {
+              console.error(e);
+            }
+            socket.close();
+          })();
+        },});
       this.setState({ browseToURL: undefined })
     }
   }

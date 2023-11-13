@@ -30,6 +30,7 @@ async function main() {
     // authorizes the client for use.
     authKey: DEBUG ? authKey : undefined,
   })
+
   app.runWithIPN(ipn)
 }
 

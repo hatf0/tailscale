@@ -12,9 +12,11 @@ package main
 import (
 	"context"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"log"
 	"math/rand"
+	"net"
 	"net/http"
 	"strings"
 	"syscall/js"
@@ -107,12 +109,22 @@ func newIPN(jsConfig js.Value) map[string]any {
 			if len(args) != 1 {
 				log.Fatal(`Usage: run({
 					notifyState(state: int): void,
-					notifyNetMap(netMap: object): void,
-					notifyPanicRecover(err: string): void,
 				})`)
 				return nil
 			}
 			jsIPN.run(args[0])
+			return nil
+		}),
+		"listen": js.FuncOf(func(this js.Value, args []js.Value) any {
+			if len(args) != 1 {
+				log.Fatal(`Usage: listen({
+					port: number,
+					onConnection(socket: Socket): void
+				})`)
+				return nil
+			}
+
+			jsIPN.listen(args[0])
 			return nil
 		}),
 	}
@@ -154,6 +166,91 @@ func (i *jsIPN) run(jsCallbacks js.Value) {
 			log.Printf("Start error: %v", err)
 		}
 		jsCallbacks.Call("notifyState", status.BackendState)
+	}()
+}
+
+func makeJSSocket(conn net.Conn) map[string]any {
+	readStreamConstructor := js.Global().Get("ReadableStream")
+	writableStreamConstructor := js.Global().Get("WritableStream")
+	uint8Array := js.Global().Get("Uint8Array")
+
+	read := map[string]any{
+		"pull": js.FuncOf(func(this js.Value, args []js.Value) any {
+			go func() {
+				buf := make([]byte, 4096)
+				len, err := conn.Read(buf)
+				if err != nil {
+					log.Printf("Read error: %v", err)
+					return
+				}
+
+				if len == 0 {
+					// no data to read
+					return
+				}
+
+				controller := args[0]
+				chunkArr := uint8Array.New(len)
+				js.CopyBytesToJS(chunkArr, buf[:len])
+				controller.Call("enqueue", chunkArr)
+			}()
+			return nil
+		}),
+		"type": "bytes",
+	}
+
+	readStream := readStreamConstructor.New(read)
+
+	write := map[string]any{
+		"write": js.FuncOf(func(this js.Value, args []js.Value) any {
+			return makePromise(func() (any, error) {
+				arr := uint8Array.New(args[0])
+				sz := arr.Get("length").Int()
+				buf := make([]byte, sz)
+				copySz := js.CopyBytesToGo(buf, arr)
+				if sz != copySz {
+					return nil, errors.New("mismatch between copy size and expected size")
+				}
+				sz, err := conn.Write(buf)
+				if err != nil {
+					return nil, err
+				}
+				return sz, nil
+			})
+		}),
+	}
+
+	writeStream := writableStreamConstructor.New(write)
+
+	return map[string]any{
+		"read":  readStream,
+		"write": writeStream,
+		"close": js.FuncOf(func(this js.Value, args []js.Value) any {
+			conn.Close()
+			return nil
+		}),
+	}
+}
+
+func (i *jsIPN) listen(args js.Value) {
+	port := args.Get("port").Int()
+	l, err := i.srv.Listen("tcp", fmt.Sprintf(":%d", port))
+	if err != nil {
+		log.Printf("Listen error: %v", err)
+		return
+	}
+	log.Printf("Listening on port %d", port)
+
+	go func() {
+		for {
+			conn, err := l.Accept()
+			if err != nil {
+				log.Printf("Accept error: %v", err)
+				return
+			}
+			log.Printf("New connection from %v", conn.RemoteAddr())
+			args.Call("onConnection", makeJSSocket(conn))
+		}
 	}()
 }
 
