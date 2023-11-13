@@ -30,6 +30,7 @@ import (
 	"golang.org/x/term"
 	"tailscale.com/atomicfile"
 	"tailscale.com/envknob"
+	"tailscale.com/ipn"
 	"tailscale.com/log/filelogger"
 	"tailscale.com/logtail"
 	"tailscale.com/logtail/filch"
@@ -234,6 +235,8 @@ func LogsDir(logf logger.Logf) string {
 			logf("logpolicy: using $STATE_DIRECTORY, %q", systemdStateDir)
 			return systemdStateDir
 		}
+	case "js", "wasip1":
+		return "log-policy"
 	}
 
 	// Default to e.g. /var/lib/tailscale or /var/db/tailscale on Unix.
@@ -269,6 +272,7 @@ func LogsDir(logf logger.Logf) string {
 	}
 	logf("logpolicy: using temp directory, %q", tmp)
 	return tmp
+
 }
 
 // runningUnderSystemd reports whether we're running under systemd.
@@ -299,6 +303,25 @@ func winProgramDataAccessible(dir string) bool {
 		return false
 	}
 	return true
+}
+
+const logPolicyStateKey = "log-policy"
+
+func getOrCreateLogPolicyConfig(state ipn.StateStore) *Config {
+	if configBytes, err := state.ReadState(logPolicyStateKey); err == nil {
+		if config, err := ConfigFromBytes(configBytes); err == nil {
+			return config
+		} else {
+			log.Printf("Could not parse log policy config: %v", err)
+		}
+	} else if err != ipn.ErrStateNotExist {
+		log.Printf("Could not get log policy config from state store: %v", err)
+	}
+	config := NewConfig(logtail.CollectionNode)
+	if err := state.WriteState(logPolicyStateKey, config.ToBytes()); err != nil {
+		log.Printf("Could not save log policy config to state store: %v", err)
+	}
+	return config
 }
 
 // tryFixLogStateLocation is a temporary fixup for

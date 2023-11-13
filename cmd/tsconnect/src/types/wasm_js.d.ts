@@ -7,7 +7,7 @@
  */
 
 declare global {
-  function newIPN(config: IPNConfig): IPN
+  function newTSNet(config: IPNConfig): IPN
 
   interface IPN {
     run(callbacks: IPNCallbacks): void

@@ -223,7 +223,7 @@ func buildWasm(dev bool) ([]byte, error) {
 	// to fail for unclosed files.
 	defer outputFile.Close()
 
-	args := []string{"build", "-tags", "tailscale_go,osusergo,netgo,nethttpomithttp2,omitidna,omitpemdecrypt"}
+	args := []string{"build", "-tags", "tailscale_go,osusergo,netgo,nethttpomithttp2,omitidna,omitpemdecrypt,!ts_enable_sockstats"}
 	if !dev {
 		if *devControl != "" {
 			return nil, fmt.Errorf("Development control URL can only be used in dev mode.")
@@ -235,7 +235,7 @@ func buildWasm(dev bool) ([]byte, error) {
 		args = append(args, "-ldflags", fmt.Sprintf("-X 'main.ControlURL=%v'", *devControl))
 	}
 
-	args = append(args, "-o", outputPath, "./wasm")
+	args = append(args, "-o", outputPath, "./wasm2")
 	cmd := exec.Command(filepath.Join(runtime.GOROOT(), "bin", "go"), args...)
 	cmd.Env = append(os.Environ(), "GOOS=js", "GOARCH=wasm")
 	cmd.Stdin = os.Stdin

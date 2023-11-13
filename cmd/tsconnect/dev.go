@@ -7,6 +7,7 @@ package main
 
 import (
 	"log"
+	"time"
 )
 
 func runDev() {
@@ -15,4 +16,7 @@ func runDev() {
 		log.Fatalf("Cannot setup: %v", err)
 	}
 	runEsbuildServe(*buildOptions)
+	for {
+		time.Sleep(time.Second)
+	}
 }

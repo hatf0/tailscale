@@ -46,12 +46,10 @@ import (
 	"tailscale.com/net/proxymux"
 	"tailscale.com/net/socks5"
 	"tailscale.com/net/tsdial"
-	"tailscale.com/smallzstd"
 	"tailscale.com/tsd"
 	"tailscale.com/types/logger"
 	"tailscale.com/types/logid"
 	"tailscale.com/types/nettype"
-	"tailscale.com/util/clientmetric"
 	"tailscale.com/util/mak"
 	"tailscale.com/util/set"
 	"tailscale.com/util/testenv"
@@ -482,24 +480,24 @@ func (s *Server) start() (reterr error) {
 
 	logf := s.logf
 
-	if s.rootPath == "" {
-		confDir, err := os.UserConfigDir()
-		if err != nil {
-			return err
-		}
-		s.rootPath, err = getTSNetDir(logf, confDir, prog)
-		if err != nil {
-			return err
-		}
-	}
-	if err := os.MkdirAll(s.rootPath, 0700); err != nil {
-		return err
-	}
-	if fi, err := os.Stat(s.rootPath); err != nil {
-		return err
-	} else if !fi.IsDir() {
-		return fmt.Errorf("%v is not a directory", s.rootPath)
-	}
+	// if s.rootPath == "" {
+	// 	confDir, err := os.UserConfigDir()
+	// 	if err != nil {
+	// 		return err
+	// 	}
+	// 	s.rootPath, err = getTSNetDir(logf, confDir, prog)
+	// 	if err != nil {
+	// 		return err
+	// 	}
+	// }
+	// if err := os.MkdirAll(s.rootPath, 0700); err != nil {
+	// 	return err
+	// }
+	// if fi, err := os.Stat(s.rootPath); err != nil {
+	// 	return err
+	// } else if !fi.IsDir() {
+	// 	return fmt.Errorf("%v is not a directory", s.rootPath)
+	// }
 
 	if err := s.startLogger(&closePool); err != nil {
 		return err
@@ -612,49 +610,58 @@ func (s *Server) start() (reterr error) {
 	return nil
 }
 
+const logPolicyStateKey = "log-policy"
+
+func getOrCreateLogPolicyConfig(state ipn.StateStore) *logpolicy.Config {
+	if configBytes, err := state.ReadState(logPolicyStateKey); err == nil {
+		if config, err := logpolicy.ConfigFromBytes(configBytes); err == nil {
+			return config
+		} else {
+			log.Printf("Could not parse log policy config: %v", err)
+		}
+	} else if err != ipn.ErrStateNotExist {
+		log.Printf("Could not get log policy config from state store: %v", err)
+	}
+	config := logpolicy.NewConfig(logtail.CollectionNode)
+	if err := state.WriteState(logPolicyStateKey, config.ToBytes()); err != nil {
+		log.Printf("Could not save log policy config to state store: %v", err)
+	}
+	return config
+}
+
 func (s *Server) startLogger(closePool *closeOnErrorPool) error {
 	if testenv.InTest() {
 		return nil
 	}
-	cfgPath := filepath.Join(s.rootPath, "tailscaled.log.conf")
-	lpc, err := logpolicy.ConfigFromFile(cfgPath)
-	switch {
-	case os.IsNotExist(err):
-		lpc = logpolicy.NewConfig(logtail.CollectionNode)
-		if err := lpc.Save(cfgPath); err != nil {
-			return fmt.Errorf("logpolicy.Config.Save for %v: %w", cfgPath, err)
-		}
-	case err != nil:
-		return fmt.Errorf("logpolicy.LoadConfig for %v: %w", cfgPath, err)
-	}
-	if err := lpc.Validate(logtail.CollectionNode); err != nil {
-		return fmt.Errorf("logpolicy.Config.Validate for %v: %w", cfgPath, err)
-	}
-	s.logid = lpc.PublicID
-
-	s.logbuffer, err = filch.New(filepath.Join(s.rootPath, "tailscaled"), filch.Options{ReplaceStderr: false})
-	if err != nil {
-		return fmt.Errorf("error creating filch: %w", err)
-	}
-	closePool.add(s.logbuffer)
+	lpc := getOrCreateLogPolicyConfig(s.Store)
 	c := logtail.Config{
 		Collection: lpc.Collection,
 		PrivateID:  lpc.PrivateID,
-		Stderr:     io.Discard, // log everything to Buffer
-		Buffer:     s.logbuffer,
-		NewZstdEncoder: func() logtail.Encoder {
-			w, err := smallzstd.NewEncoder(nil)
-			if err != nil {
-				panic(err)
-			}
-			return w
-		},
-		HTTPC:        &http.Client{Transport: logpolicy.NewLogtailTransport(logtail.DefaultHost, s.netMon, s.logf)},
-		MetricsDelta: clientmetric.EncodeLogTailMetricsDelta,
+		// NewZstdEncoder is intentionally not passed in, compressed requests
+		// set HTTP headers that are not supported by the no-cors fetching mode.
+		HTTPC: &http.Client{Transport: &noCORSTransport{http.DefaultTransport}},
 	}
 	s.logtail = logtail.NewLogger(c, s.logf)
 	closePool.addFunc(func() { s.logtail.Shutdown(context.Background()) })
 	return nil
+}
+
+// noCORSTransport wraps a RoundTripper and forces the no-cors mode on requests,
+// so that we can use it with non-CORS-aware servers.
+type noCORSTransport struct {
+	http.RoundTripper
+}
+
+func (t *noCORSTransport) RoundTrip(req *http.Request) (*http.Response, error) {
+	req.Header.Set("js.fetch:mode", "no-cors")
+	resp, err := t.RoundTripper.RoundTrip(req)
+	if err == nil {
+		// In no-cors mode no response properties are returned. Populate just
+		// the status so that callers do not think this was an error.
+		resp.StatusCode = http.StatusOK
+		resp.Status = http.StatusText(http.StatusOK)
+	}
+	return resp, err
 }
 
 type closeOnErrorPool []func()
