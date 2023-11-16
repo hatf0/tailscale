@@ -76,6 +76,13 @@ func newIPN(jsConfig js.Value) map[string]any {
 		hostname = generateHostname()
 	}
 
+	var ephemeral bool
+	if jsEphemeral := jsConfig.Get("ephemeral"); jsEphemeral.Type() == js.TypeString {
+		ephemeral = jsEphemeral.Bool()
+	} else {
+		ephemeral = true
+	}
+
 	lpc := getOrCreateLogPolicyConfig(store)
 	c := logtail.Config{
 		Collection: lpc.Collection,
@@ -91,7 +98,7 @@ func newIPN(jsConfig js.Value) map[string]any {
 		Store:      store,
 		Hostname:   hostname,
 		Logf:       logf,
-		Ephemeral:  true,
+		Ephemeral:  ephemeral,
 		AuthKey:    authKey,
 		ControlURL: controlURL,
 		Dir:        "/tailscale",
@@ -115,16 +122,50 @@ func newIPN(jsConfig js.Value) map[string]any {
 			jsIPN.run(args[0])
 			return nil
 		}),
+		"close": js.FuncOf(func(this js.Value, args []js.Value) any {
+			err := jsIPN.srv.Close()
+			if err != nil {
+				return err
+			}
+			return nil
+		}),
 		"listen": js.FuncOf(func(this js.Value, args []js.Value) any {
 			if len(args) != 1 {
 				log.Fatal(`Usage: listen({
 					port: number,
+					protocol?: "tcp" : "udp",
 					onConnection(socket: Socket): void
 				})`)
 				return nil
 			}
 
 			jsIPN.listen(args[0])
+			return nil
+		}),
+		"listenTLS": js.FuncOf(func(this js.Value, args []js.Value) any {
+			if len(args) != 1 {
+				log.Fatal(`Usage: listenTLS({
+					port: number,
+					protocol?: "tcp",
+					onConnection(socket: Socket): void
+				})`)
+				return nil
+			}
+
+			jsIPN.listenTLS(args[0])
+			return nil
+		}),
+		"listenFunnel": js.FuncOf(func(this js.Value, args []js.Value) any {
+			if len(args) != 1 {
+				log.Fatal(`Usage: listenFunnel({
+					port: number,
+					protocol?: "tcp",
+					onConnection(socket: Socket): void
+				})`)
+				return nil
+			}
+
+			jsIPN.listenFunnel(args[0])
 			return nil
 		}),
 	}
@@ -154,29 +195,35 @@ var jsMachineStatus = map[tailcfg.MachineStatus]string{
 	tailcfg.MachineInvalid:      "MachineInvalid",
 }
 
-func (i *jsIPN) run(jsCallbacks js.Value) {
+func (i *jsIPN) run(jsCallbacks js.Value) js.Value {
 	notifyState := func(state ipn.State) {
 		jsCallbacks.Call("notifyState", jsIPNState[state])
 	}
 	notifyState(ipn.NoState)
 
-	go func() {
+	return makePromise(func() (any, error) {
 		status, err := i.srv.Up(context.Background())
 		if err != nil {
 			log.Printf("Start error: %v", err)
+			return nil, err
 		}
 		jsCallbacks.Call("notifyState", status.BackendState)
-	}()
+		return nil, nil
+	})
 }
 
 func makeJSSocket(conn net.Conn) map[string]any {
 	readStreamConstructor := js.Global().Get("ReadableStream")
 	writableStreamConstructor := js.Global().Get("WritableStream")
 	uint8Array := js.Global().Get("Uint8Array")
+	closed := false
 
 	read := map[string]any{
 		"pull": js.FuncOf(func(this js.Value, args []js.Value) any {
 			go func() {
+				if closed {
+					return
+				}
 				buf := make([]byte, 4096)
 				len, err := conn.Read(buf)
 				if err != nil {
@@ -196,6 +243,18 @@ func makeJSSocket(conn net.Conn) map[string]any {
 			}()
 			return nil
 		}),
+		"cancel": js.FuncOf(func(this js.Value, args []js.Value) any {
+			if closed {
+				return nil
+			}
+			err := conn.Close()
+			if err != nil {
+				log.Fatalf("failed to close: %v", err)
+				return err
+			}
+			closed = true
+			return nil
+		}),
 		"type": "bytes",
 	}
 
@@ -204,6 +263,9 @@ func makeJSSocket(conn net.Conn) map[string]any {
 	write := map[string]any{
 		"write": js.FuncOf(func(this js.Value, args []js.Value) any {
 			return makePromise(func() (any, error) {
+				if closed {
+					return nil, errors.New("trying to write to a closed socket")
+				}
 				arr := uint8Array.New(args[0])
 				sz := arr.Get("length").Int()
 				buf := make([]byte, sz)
@@ -218,64 +280,161 @@ func makeJSSocket(conn net.Conn) map[string]any {
 				return sz, nil
 			})
 		}),
+		"close": js.FuncOf(func(this js.Value, args []js.Value) any {
+			if closed {
+				return nil
+			}
+			err := conn.Close()
+			if err != nil {
+				log.Fatalf("failed to close: %v", err)
+				return err
+			}
+			closed = true
+			return nil
+		}),
 	}
 
 	writeStream := writableStreamConstructor.New(write)
 
 	return map[string]any{
-		"read":  readStream,
-		"write": writeStream,
+		"localAddress": conn.LocalAddr().String(),
+		"peerAddress":  conn.RemoteAddr().String(),
+		"closed":       closed,
+		"read":         readStream,
+		"write":        writeStream,
 		"close": js.FuncOf(func(this js.Value, args []js.Value) any {
+			if closed {
+				return nil
+			}
 			conn.Close()
 			return nil
 		}),
 	}
 }
 
-func (i *jsIPN) listen(args js.Value) {
+func (i *jsIPN) listen(args js.Value) js.Value {
 	port := args.Get("port").Int()
-	l, err := i.srv.Listen("tcp", fmt.Sprintf(":%d", port))
-	if err != nil {
-		log.Printf("Listen error: %v", err)
-		return
+
+	var protocol string
+	if jsProtocol := args.Get("protocol"); jsProtocol.Type() == js.TypeString {
+		protocol = jsProtocol.String()
+	} else {
+		protocol = "tcp"
 	}
-	log.Printf("Listening on port %d", port)
 
-	go func() {
-		for {
-			conn, err := l.Accept()
-			if err != nil {
-				log.Printf("Accept error: %v", err)
-				return
-			}
-			log.Printf("New connection from %v", conn.RemoteAddr())
-			args.Call("onConnection", makeJSSocket(conn))
+	return makePromise(func() (any, error) {
+		l, err := i.srv.Listen(protocol, fmt.Sprintf(":%d", port))
+		if err != nil {
+			log.Printf("Listen error: %v", err)
+			return nil, err
 		}
-	}()
+		log.Printf("Listening on port %d", port)
+
+		stop := false
+
+		go func() {
+			for !stop {
+				conn, err := l.Accept()
+				if err != nil {
+					log.Printf("Accept error: %v", err)
+					return
+				}
+				args.Call("onConnection", makeJSSocket(conn))
+			}
+			l.Close()
+		}()
+
+		listener := map[string]any{
+			"closed": stop,
+			"close": js.FuncOf(func(this js.Value, args []js.Value) any {
+				if !stop {
+					stop = true
+				}
+
+				return nil
+			}),
+		}
+
+		return listener, nil
+	})
 }
 
-type jsNetMap struct {
-	Self      jsNetMapSelfNode   `json:"self"`
-	Peers     []jsNetMapPeerNode `json:"peers"`
-	LockedOut bool               `json:"lockedOut"`
+func (i *jsIPN) listenTLS(args js.Value) js.Value {
+	port := args.Get("port").Int()
+
+	return makePromise(func() (any, error) {
+		l, err := i.srv.ListenTLS("tcp", fmt.Sprintf(":%d", port))
+		if err != nil {
+			log.Printf("Listen error: %v", err)
+			return nil, err
+		}
+		log.Printf("Listening on port %d", port)
+
+		stop := false
+
+		go func() {
+			for !stop {
+				conn, err := l.Accept()
+				if err != nil {
+					log.Printf("Accept error: %v", err)
+					return
+				}
+				args.Call("onConnection", makeJSSocket(conn))
+			}
+		}()
+
+		listener := map[string]any{
+			"closed": stop,
+			"close": js.FuncOf(func(this js.Value, args []js.Value) any {
+				if !stop {
+					stop = true
+				}
+
+				return nil
+			}),
+		}
+
+		return listener, nil
+	})
 }
 
-type jsNetMapNode struct {
-	Name       string   `json:"name"`
-	Addresses  []string `json:"addresses"`
-	MachineKey string   `json:"machineKey"`
-	NodeKey    string   `json:"nodeKey"`
-}
+func (i *jsIPN) listenFunnel(args js.Value) js.Value {
+	port := args.Get("port").Int()
 
-type jsNetMapSelfNode struct {
-	jsNetMapNode
-	MachineStatus string `json:"machineStatus"`
-}
+	return makePromise(func() (any, error) {
+		l, err := i.srv.ListenFunnel("tcp", fmt.Sprintf(":%d", port))
+		if err != nil {
+			log.Printf("Listen error: %v", err)
+			return nil, err
+		}
+		log.Printf("Listening on port %d", port)
 
-type jsNetMapPeerNode struct {
-	jsNetMapNode
-	Online              *bool `json:"online,omitempty"`
-	TailscaleSSHEnabled bool  `json:"tailscaleSSHEnabled"`
+		stop := false
+
+		go func() {
+			for !stop {
+				conn, err := l.Accept()
+				if err != nil {
+					log.Printf("Accept error: %v", err)
+					return
+				}
+				args.Call("onConnection", makeJSSocket(conn))
+			}
+		}()
+
+		listener := map[string]any{
+			"closed": stop,
+			"close": js.FuncOf(func(this js.Value, args []js.Value) any {
+				if !stop {
+					stop = true
+				}
+
+				return nil
+			}),
+		}
+
+		return listener, nil
+	})
 }
 
 type jsStateStore struct {

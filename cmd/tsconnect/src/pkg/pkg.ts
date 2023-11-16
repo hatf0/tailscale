@@ -23,7 +23,7 @@ type IPNPackageConfig = IPNConfig & {
   panicHandler: (err: string) => void
 }
 
-export async function createIPN(config: IPNPackageConfig): Promise<IPN> {
+export async function createTSNet(config: IPNPackageConfig): Promise<IPN> {
   const go = new Go()
   const wasmInstance = await WebAssembly.instantiateStreaming(
     fetch(config.wasmURL ?? wasmURL),
@@ -34,7 +34,5 @@ export async function createIPN(config: IPNPackageConfig): Promise<IPN> {
     config.panicHandler("Unexpected shutdown")
   )
 
-  return newIPN(config)
+  return newTSNet(config)
 }
-
-export { runSSHSession } from "../lib/ssh"

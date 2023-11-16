@@ -10,13 +10,16 @@ declare global {
   function newTSNet(config: IPNConfig): IPN
 
   interface IPN {
-    run(callbacks: IPNCallbacks): void
-    listen(args: ListenArgs): void
+    run(callbacks: IPNCallbacks): Promise<void>
+    close(): void
+    listen(args: ListenArgs): Promise<IPNListener>
+    listenTLS(args: ListenTLSArgs): Promise<IPNListener>
+    listenFunnel(args: ListenFunnelArgs): Promise<IPNListener>
   }
 
-  interface IPNSSHSession {
-    resize(rows: number, cols: number): boolean
-    close(): boolean
+  interface IPNListener {
+    closed: boolean,
+    close: () => void,
   }
 
   interface IPNStateStorage {
@@ -29,14 +32,30 @@ declare global {
     authKey?: string
     controlURL?: string
     hostname?: string
+    ephemeral?: boolean
   }
 
   type ListenArgs = {
     port: number,
+    protocol?: "tcp" | "udp",
     onConnection: (socket: IPNSocket) => void,
   };
 
+  type ListenTLSArgs = {
+    port: number,
+    protocol?: "tcp",
+    onConnection: (socket: IPNSocket) => void,
+  }
+
+  type ListenFunnelArgs = {
+    port: 443 | 8443 | 10000,
+    protocol?: "tcp",
+    onConnection: (socket: IPNSocket) => void,
+  }
+
   type IPNSocket = {
+    localAddress: string,
+    peerAddress: string,
     read: ReadableStream<Uint8Array>,
     write: WritableStream<Uint8Array>,
     close: () => void,
@@ -44,31 +63,6 @@ declare global {
 
   type IPNCallbacks = {
     notifyState: (state: IPNState) => void
-    notifyNetMap: (netMapStr: string) => void
-    notifyBrowseToURL: (url: string) => void
-    notifyPanicRecover: (err: string) => void
-  }
-
-  type IPNNetMap = {
-    self: IPNNetMapSelfNode
-    peers: IPNNetMapPeerNode[]
-    lockedOut: boolean
-  }
-
-  type IPNNetMapNode = {
-    name: string
-    addresses: string[]
-    machineKey: string
-    nodeKey: string
-  }
-
-  type IPNNetMapSelfNode = IPNNetMapNode & {
-    machineStatus: IPNMachineStatus
-  }
-
-  type IPNNetMapPeerNode = IPNNetMapNode & {
-    online?: boolean
-    tailscaleSSHEnabled: boolean
   }
 
   /** Mirrors values from ipn/backend.go */

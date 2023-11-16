@@ -9,7 +9,6 @@ export function Header({ state, ipn }: { state: IPNState; ipn?: IPN }) {
     logoutButton = (
       <button
         class="button bg-gray-500 border-gray-500 text-white hover:bg-gray-600 hover:border-gray-600 ml-2 font-bold"
-        onClick={() => ipn?.logout()}
       >
         Logout
       </button>
