@@ -39,9 +39,9 @@ func runBuildPkg() {
 
 	runEsbuild(*buildOptions)
 
-	if err := precompressWasm(); err != nil {
-		log.Fatalf("Could not pre-recompress wasm: %v", err)
-	}
+	// if err := precompressWasm(); err != nil {
+	// 	log.Fatalf("Could not pre-recompress wasm: %v", err)
+	// }
 
 	log.Printf("Generating types...\n")
 	if err := runYarn("pkg-types"); err != nil {

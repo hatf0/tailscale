@@ -52,7 +52,10 @@ func commonSetup(dev bool) (*esbuild.BuildOptions, error) {
 		Sourcemap:   esbuild.SourceMapLinked,
 		LogLevel:    esbuild.LogLevelInfo,
 		Define:      map[string]string{"DEBUG": strconv.FormatBool(dev)},
-		Target:      esbuild.ES2017,
+		Target:      esbuild.ESNext,
+		Format:      esbuild.FormatCommonJS,
+		Platform:    esbuild.PlatformNode,
+		External:    []string{"performance", "ws"},
 		Plugins: []esbuild.Plugin{
 			{
 				Name: "tailscale-tailwind",
@@ -180,6 +183,13 @@ func setupEsbuildWasmExecJS(build esbuild.PluginBuild) {
 	}, func(args esbuild.OnResolveArgs) (esbuild.OnResolveResult, error) {
 		return esbuild.OnResolveResult{Path: wasmExecSrcPath}, nil
 	})
+
+	wasmExecNodeSrcPath := filepath.Join(runtime.GOROOT(), "misc", "wasm", "wasm_exec_node.js")
+	build.OnResolve(esbuild.OnResolveOptions{
+		Filter: "./wasm_exec_node$",
+	}, func(args esbuild.OnResolveArgs) (esbuild.OnResolveResult, error) {
+		return esbuild.OnResolveResult{Path: wasmExecNodeSrcPath}, nil
+	})
 }
 
 // setupEsbuildWasm generates an esbuild plugin that builds the Tailscale wasm
@@ -247,12 +257,12 @@ func buildWasm(dev bool) ([]byte, error) {
 	}
 	log.Printf("Built wasm in %v\n", time.Since(start).Round(time.Millisecond))
 
-	if !dev {
-		err := runWasmOpt(outputPath)
-		if err != nil {
-			return nil, fmt.Errorf("Cannot run wasm-opt: %w", err)
-		}
-	}
+	// if !dev {
+	// 	err := runWasmOpt(outputPath)
+	// 	if err != nil {
+	// 		return nil, fmt.Errorf("Cannot run wasm-opt: %w", err)
+	// 	}
+	// }
 
 	return os.ReadFile(outputPath)
 }

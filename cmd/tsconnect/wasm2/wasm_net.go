@@ -77,27 +77,29 @@ func newIPN(jsConfig js.Value) map[string]any {
 	}
 
 	var ephemeral bool
-	if jsEphemeral := jsConfig.Get("ephemeral"); jsEphemeral.Type() == js.TypeString {
+	if jsEphemeral := jsConfig.Get("ephemeral"); jsEphemeral.Type() == js.TypeBoolean {
 		ephemeral = jsEphemeral.Bool()
 	} else {
 		ephemeral = true
 	}
 
-	lpc := getOrCreateLogPolicyConfig(store)
-	c := logtail.Config{
-		Collection: lpc.Collection,
-		PrivateID:  lpc.PrivateID,
-		// NewZstdEncoder is intentionally not passed in, compressed requests
-		// set HTTP headers that are not supported by the no-cors fetching mode.
-		HTTPC: &http.Client{Transport: &noCORSTransport{http.DefaultTransport}},
-	}
-	logtail := logtail.NewLogger(c, log.Printf)
-	logf := logtail.Logf
+	// not sure why, but there's actually two loggers running at the same time
+	// so we'll just get rid of ours for the time being
+	// lpc := getOrCreateLogPolicyConfig(store)
+	// c := logtail.Config{
+	// 	Collection: lpc.Collection,
+	// 	PrivateID:  lpc.PrivateID,
+	// 	// NewZstdEncoder is intentionally not passed in, compressed requests
+	// 	// set HTTP headers that are not supported by the no-cors fetching mode.
+	// 	HTTPC: &http.Client{Transport: &noCORSTransport{http.DefaultTransport}},
+	// }
+	// logtail := logtail.NewLogger(c, log.Printf)
+	// logf := logtail.Logf
 
 	srv := &tsnet.Server{
 		Store:      store,
 		Hostname:   hostname,
-		Logf:       logf,
+		Logf:       nil,
 		Ephemeral:  ephemeral,
 		AuthKey:    authKey,
 		ControlURL: controlURL,

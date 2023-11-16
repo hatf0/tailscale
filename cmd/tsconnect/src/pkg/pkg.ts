@@ -6,8 +6,14 @@
 /// <reference path="../types/esbuild.d.ts" />
 /// <reference path="../types/wasm_js.d.ts" />
 
-import "../wasm_exec"
 import wasmURL from "./main.wasm"
+import * as fs from 'node:fs';
+import * as path from 'node:path';
+import { TextEncoder, TextDecoder } from 'node:util';
+import { webcrypto } from 'node:crypto';
+import { resolve } from 'node:path';
+// @ts-ignore
+import { WebSocket } from "ws";
 
 /**
  * Superset of the IPNConfig type, with additional configuration that is
@@ -24,15 +30,44 @@ type IPNPackageConfig = IPNConfig & {
 }
 
 export async function createTSNet(config: IPNPackageConfig): Promise<IPN> {
+  const tsStateStorage: { [key: string]: any } = {};
+  const sessionStateStorage: IPNStateStorage = {
+    setState(id, value) {
+      tsStateStorage[`ipn-state-${id}`] = value
+    },
+    getState(id) {
+      return tsStateStorage[`ipn-state-${id}`] || ""
+    },
+  }
+
+  // @ts-ignore
+  globalThis.TextEncoder = TextEncoder;
+  // @ts-ignore
+  globalThis.TextDecoder = TextDecoder;
+  // @ts-ignore
+  globalThis.crypto ??= webcrypto
+  globalThis.fetch = fetch;
+  globalThis.Headers = Headers;
+  // Patch out process (temporarily)
+  // @ts-ignore
+  globalThis.process = undefined;
+  // @ts-ignore
+  globalThis.WebSocket = WebSocket;
+  require("./wasm_exec");
+
   const go = new Go()
-  const wasmInstance = await WebAssembly.instantiateStreaming(
-    fetch(config.wasmURL ?? wasmURL),
+  const wasmInstance = await WebAssembly.instantiate(
+    fs.readFileSync(path.join(new URL(import.meta.url).pathname, `../${wasmURL}`)),
     go.importObject
   )
+
   // The Go process should never exit, if it does then it's an unhandled panic.
   go.run(wasmInstance.instance).then(() =>
     config.panicHandler("Unexpected shutdown")
   )
 
-  return newTSNet(config)
+  return newTSNet({
+    ...config,
+    stateStorage: sessionStateStorage
+  })
 }
